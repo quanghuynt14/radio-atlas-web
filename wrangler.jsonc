@@ -1,0 +1,22 @@
+{
+  // Cloudflare Workers — static asset hosting for the Vite build output.
+  // Deploy with:  npm run deploy
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "radio-atlas-web",
+  "compatibility_date": "2026-08-20",
+  "assets": {
+    "directory": "./dist",
+    // One HTML entry point and no server routes, so anything unmatched is the app.
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    {
+      "pattern": "radio.huy0x.dev",
+      "custom_domain": true
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

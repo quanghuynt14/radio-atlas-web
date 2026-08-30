@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check:projection": "node scripts/check-projection.mjs",
-    "check": "npm run typecheck && npm run check:projection"
+    "check": "npm run typecheck && npm run check:projection",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "d3-geo": "^3.1.1",
@@ -26,7 +27,8 @@
     "@types/topojson-specification": "^1.0.5",
     "@vitejs/plugin-react": "^4.3.3",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "wrangler": "^4.127.1"
   },
   "allowScripts": {
     "esbuild@0.21.5": true
