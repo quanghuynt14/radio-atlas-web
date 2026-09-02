@@ -14,7 +14,7 @@ npm run dev        # http://127.0.0.1:5178
 ```
 
 ```bash
-npm run check      # types + projection invariants
+npm run check      # types + projection and marker invariants
 npm run build      # production bundle into dist/
 ```
 
@@ -56,11 +56,27 @@ default; the control on the globe cycles system, light and dark.
 | `lib/cache.ts` | IndexedDB station cache — stale results paint instantly, fresh ones replace them |
 | `lib/countries.ts` | Natural Earth outlines joined to ISO alpha-2 codes; country hit-testing and centroids |
 | `lib/projection.ts` | cobe's projection in TypeScript, so the globe can be clicked |
+| `lib/markers.ts` | Which signals get drawn at a given zoom, and how big |
 | `lib/state.ts` | Favourites, history and volume in `localStorage` |
 | `hooks/useCatalog.ts` | Progressive world load, country browsing, search |
 | `hooks/usePlayer.ts` | Stream playback, mixed-content detection, skip-on-failure |
 | `components/Globe.tsx` | cobe globe plus a 2D overlay for labels, rings and country outlines |
 | `lib/theme.ts` | Theme preference, resolved to the `data-theme` the globe palette reads |
+
+### Why signals thin out
+
+cobe adds a marker's size to its position in the globe's own space and only
+then multiplies by `scale`. A dot therefore grows with the zoom, so closing in
+used to make signals *worse*: at full zoom a 7px dot became a 65px blob and
+neighbours merged into one another. `lib/markers.ts` divides that back out, and
+collapses signals that would still overlap into one dot per cell — the busiest
+station speaks for its cell, the label says how many are behind it, and zooming
+shrinks the cells until the crowd comes apart. Because the grid is measured in
+degrees rather than pixels, spinning the globe never makes dots flicker; only
+zooming changes what is drawn, which is when new detail should appear.
+
+Only drawn signals can be picked, so what you click is always the dot you aimed
+at rather than something hidden underneath it.
 
 ### Why the projection is duplicated
 

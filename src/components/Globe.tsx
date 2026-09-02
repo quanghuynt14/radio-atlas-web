@@ -3,17 +3,11 @@ import createGlobe, { type Marker } from 'cobe'
 import { geoOrthographic, geoPath } from 'd3-geo'
 import type { FeatureCollection } from 'geojson'
 import { countryAt, loadCountries, type Country } from '../lib/countries'
+import { markerSize, thin, type Drawn, type Placed } from '../lib/markers'
 import { centreOf, globeRadius, invert, lookAt, project, type View } from '../lib/projection'
 import type { Station } from '../lib/types'
 
-/** A station with coordinates resolved — published, or estimated from its country. */
-export interface Placed {
-  station: Station
-  lat: number
-  lon: number
-  /** Stations of the country being browsed, drawn brighter and picked first. */
-  session: boolean
-}
+export type { Placed } from '../lib/markers'
 
 /** Zoom is driven from outside for the on-screen controls and keyboard. */
 export interface GlobeHandle {
@@ -39,8 +33,8 @@ const HIT_RADIUS_MOUSE = 11
 const HIT_RADIUS_TOUCH = 22
 const IDLE_SPIN_RAD_PER_SEC = 0.045
 const IDLE_DELAY_MS = 3500
-/** cobe redraws every marker each frame, so keep the buffer to a sane size. */
-const MAX_MARKERS = 2600
+/** Zoom is bucketed so the thinning only redoes itself in visible steps. */
+const ZOOM_BUCKET = 1.25
 const TAU = Math.PI * 2
 
 type Rgb = [number, number, number]
@@ -100,12 +94,14 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
   const dragging = useRef(false)
   const dragged = useRef(false)
   const pointer = useRef<{ x: number; y: number } | null>(null)
-  const hovered = useRef<Placed | null>(null)
+  const hovered = useRef<Drawn | null>(null)
   const lastInteraction = useRef(performance.now())
   const geometry = useRef<{ countries: Country[]; land: FeatureCollection } | null>(null)
   const theme = useRef<Theme>(readTheme())
   const markersDirty = useRef(true)
   const hitRadius = useRef(HIT_RADIUS_MOUSE)
+  /** The thinned set: what is on screen, and so what can be hovered or picked. */
+  const drawn = useRef<Drawn[]>([])
 
   const data = useRef({ points, selectedCountry, playingUuid, selectedUuid })
   data.current = { points, selectedCountry, playingUuid, selectedUuid }
@@ -163,29 +159,46 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
     let disposed = false
     const stillness = window.matchMedia('(prefers-reduced-motion: reduce)')
 
+    const rethin = () =>
+      thin(data.current.points, view.current, {
+        playingUuid: data.current.playingUuid,
+        selectedUuid: data.current.selectedUuid,
+      })
+
     const buildMarkers = (): Marker[] => {
-      const { points: all, playingUuid: playing, selectedUuid: chosen } = data.current
+      const { playingUuid: playing, selectedUuid: chosen } = data.current
       const colours = theme.current
-      const markers: Marker[] = []
-      for (const placed of all) {
+
+      return drawn.current.map(({ placed, hidden }) => {
         const isPlaying = placed.station.uuid === playing
         const isChosen = placed.station.uuid === chosen
-        // Past the budget only the signals that matter keep their marker.
-        if (markers.length >= MAX_MARKERS && !placed.session && !isPlaying && !isChosen) continue
-        markers.push({
-          location: [placed.lat, placed.lon],
-          size: isPlaying ? 0.055 : isChosen ? 0.04 : placed.session ? 0.03 : 0.018,
-          color: isPlaying ? colours.playing : isChosen ? colours.session : placed.session ? colours.session : colours.marker,
-        })
-      }
-      return markers
+        const base = isPlaying ? 0.055 : isChosen ? 0.042 : placed.session ? 0.03 : 0.018
+        // A dot standing in for a crowd carries a little of its weight, so
+        // dense cities still read as dense at a glance.
+        const crowd = isPlaying || isChosen ? 1 : 1 + Math.min(hidden, 24) / 48
+        return {
+          location: [placed.lat, placed.lon] as [number, number],
+          size: markerSize(base * crowd, view.current.scale),
+          color: isPlaying ? colours.playing : isChosen || placed.session ? colours.session : colours.marker,
+        }
+      })
     }
+
+    /** Zoom at which the thinning and the marker sizes were last uploaded. */
+    let thinnedBucket = Number.NaN
+    let sizedScale = 0
+    const bucketOf = (scale: number) => Math.round(Math.log(scale) / Math.log(ZOOM_BUCKET))
 
     const createInstance = () => {
       const rect = wrap.getBoundingClientRect()
       view.current.width = Math.max(1, rect.width)
       view.current.height = Math.max(1, rect.height)
       ratio = Math.min(window.devicePixelRatio || 1, 2)
+
+      // Cell size comes off the globe's radius, so thin after the resize.
+      drawn.current = rethin()
+      thinnedBucket = bucketOf(view.current.scale)
+      sizedScale = view.current.scale
 
       globe?.destroy()
       const colours = theme.current
@@ -233,10 +246,13 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
     })
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
-    const nearest = (x: number, y: number): Placed | null => {
-      let best: Placed | null = null
+    // Only drawn signals can be picked, so what you click is always the dot you
+    // aimed at rather than something hidden underneath it.
+    const nearest = (x: number, y: number): Drawn | null => {
+      let best: Drawn | null = null
       let bestDistance = hitRadius.current * hitRadius.current
-      for (const placed of data.current.points) {
+      for (const candidate of drawn.current) {
+        const { placed } = candidate
         const position = project(placed.lat, placed.lon, view.current)
         if (!position.visible) continue
         const dx = position.x - x
@@ -246,7 +262,7 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
         const distance = dx * dx + dy * dy - (placed.session ? 12 : 0)
         if (distance < bestDistance) {
           bestDistance = distance
-          best = placed
+          best = candidate
         }
       }
       return best
@@ -281,9 +297,9 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
 
       const ring = (uuid: string | null, radius: number, colour: string, alpha: number) => {
         if (!uuid) return
-        const placed = data.current.points.find((item) => item.station.uuid === uuid)
-        if (!placed) return
-        const position = project(placed.lat, placed.lon, view.current)
+        const hit = drawn.current.find((item) => item.placed.station.uuid === uuid)
+        if (!hit) return
+        const position = project(hit.placed.lat, hit.placed.lon, view.current)
         if (!position.visible) return
         context.beginPath()
         context.arc(position.x, position.y, radius, 0, Math.PI * 2)
@@ -302,19 +318,44 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
       hovered.current = cursor && !dragging.current ? nearest(cursor.x, cursor.y) : null
       const hover = hovered.current
       if (hover) {
-        const position = project(hover.lat, hover.lon, view.current)
+        const position = project(hover.placed.lat, hover.placed.lon, view.current)
         if (position.visible) {
-          const text = hover.station.name
-          context.font = '12px ui-sans-serif, system-ui, -apple-system, sans-serif'
-          const boxWidth = context.measureText(text).width + 18
+          const { station } = hover.placed
+          const title = fit(context, station.name, `600 12px ${LABEL_FONT}`, LABEL_MAX)
+          // A dot standing in for others says so, rather than quietly lying
+          // about how many signals are under the cursor.
+          // Only promise that zooming helps while there is zoom left to give;
+          // stations sharing one published coordinate never come apart.
+          const roomToZoom = view.current.scale < MAX_SCALE * 0.9
+          const detail = hover.hidden
+            ? `+${hover.hidden} more here${roomToZoom ? ' — zoom in' : ''}`
+            : [station.country, station.bitrate ? `${station.bitrate} kbps` : ''].filter(Boolean).join(' · ')
+          const subtitle = detail ? fit(context, detail, `11px ${LABEL_FONT}`, LABEL_MAX) : ''
+
+          context.font = `600 12px ${LABEL_FONT}`
+          const titleWidth = context.measureText(title).width
+          context.font = `11px ${LABEL_FONT}`
+          const subtitleWidth = subtitle ? context.measureText(subtitle).width : 0
+
+          const boxWidth = Math.max(titleWidth, subtitleWidth) + 20
+          const boxHeight = subtitle ? 40 : 25
           const x = Math.min(Math.max(position.x - boxWidth / 2, 8), Math.max(8, width - boxWidth - 8))
-          const y = Math.max(position.y - 32, 8)
+          const y = Math.max(position.y - boxHeight - 12, 8)
+
           context.fillStyle = colours.label
           context.beginPath()
-          context.roundRect(x, y, boxWidth, 24, 7)
+          context.roundRect(x, y, boxWidth, boxHeight, 8)
           context.fill()
+
           context.fillStyle = colours.labelText
-          context.fillText(text, x + 9, y + 16)
+          context.font = `600 12px ${LABEL_FONT}`
+          context.fillText(title, x + 10, y + 17)
+          if (subtitle) {
+            context.font = `11px ${LABEL_FONT}`
+            context.globalAlpha = 0.62
+            context.fillText(subtitle, x + 10, y + 32)
+            context.globalAlpha = 1
+          }
         }
       }
 
@@ -349,9 +390,20 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
           theta: view.current.theta,
           scale: view.current.scale,
         }
-        if (markersDirty.current) {
-          update.markers = buildMarkers()
+        // Thinning is redone in zoom steps, but sizes follow the zoom the whole
+        // way, so dots never jump when a step is crossed.
+        const bucket = bucketOf(view.current.scale)
+        let reupload = markersDirty.current || bucket !== thinnedBucket
+        if (reupload) {
+          drawn.current = rethin()
+          thinnedBucket = bucket
           markersDirty.current = false
+        } else if (Math.abs(view.current.scale - sizedScale) > sizedScale * 0.004) {
+          reupload = true
+        }
+        if (reupload) {
+          update.markers = buildMarkers()
+          sizedScale = view.current.scale
         }
         globe.update(update)
       }
@@ -449,9 +501,9 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
     const onClick = (event: MouseEvent) => {
       if (dragged.current) return
       const { x, y } = local(event)
-      const station = nearest(x, y)
-      if (station) {
-        callbacks.current.onPickStation(station.station)
+      const hit = nearest(x, y)
+      if (hit) {
+        callbacks.current.onPickStation(hit.placed.station)
         return
       }
       const coordinate = invert(x, y, view.current)
@@ -510,6 +562,20 @@ const Globe = forwardRef<GlobeHandle, Props>(function Globe(
 })
 
 export default Globe
+
+const LABEL_FONT = "ui-sans-serif, system-ui, -apple-system, sans-serif"
+const LABEL_MAX = 240
+
+/** Trims a label to fit, with an ellipsis, so a long name cannot run off. */
+function fit(context: CanvasRenderingContext2D, text: string, font: string, max: number): string {
+  context.font = font
+  if (context.measureText(text).width <= max) return text
+  let trimmed = text
+  while (trimmed.length > 1 && context.measureText(`${trimmed}…`).width > max) {
+    trimmed = trimmed.slice(0, -1)
+  }
+  return `${trimmed}…`
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))

@@ -9,8 +9,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check:projection": "node scripts/check-projection.mjs",
-    "check": "npm run typecheck && npm run check:projection",
-    "deploy": "npm run build && wrangler deploy"
+    "check": "npm run typecheck && npm run check:projection && npm run check:markers",
+    "deploy": "npm run build && wrangler deploy",
+    "check:markers": "node scripts/check-markers.mjs"
   },
   "dependencies": {
     "cobe": "2.0.1",
