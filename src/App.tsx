@@ -6,6 +6,7 @@ import StationList from './components/StationList'
 import { useCatalog } from './hooks/useCatalog'
 import { useMediaQuery } from './hooks/useMediaQuery'
 import { usePlayer } from './hooks/usePlayer'
+import { blockedReason, forgetOffAir, isOffAir, loadOffAir, playable, rememberOffAir } from './lib/availability'
 import { countryName, estimateLocation, type Country } from './lib/countries'
 import { fetchRandom } from './lib/radioBrowser'
 import { loadState, pushHistory, saveState, toggleFavourite } from './lib/state'
@@ -60,6 +61,10 @@ export default function App() {
   const [focus, setFocus] = useState<{ lat: number; lon: number } | null>(null)
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference)
   const [sheet, setSheet] = useState<Sheet>('peek')
+  /** Stations whose stream failed here, so they stop being offered. */
+  const [offAir, setOffAir] = useState(loadOffAir)
+  /** The last station skipped past, so the jump to another one is explained. */
+  const [skipped, setSkipped] = useState<string | null>(null)
 
   const searchRef = useRef<HTMLInputElement>(null)
   const globeRef = useRef<GlobeHandle>(null)
@@ -94,6 +99,8 @@ export default function App() {
     initialMuted: initial.muted,
     onPlay: (station) => {
       skips.current = 0
+      // It played, so whatever we held against it no longer holds.
+      setOffAir((current) => forgetOffAir(current, station.uuid))
       setHistory((current) => {
         const next = pushHistory(current, station)
         saveState({ favourites, history: next, volume: volumeRef.current.volume, muted: volumeRef.current.muted })
@@ -101,14 +108,19 @@ export default function App() {
       })
     },
     onFailure: (station) => {
+      // Remember it, so this dead end is not offered to anyone again for a few
+      // days — the directory's own check cannot see what a browser refuses.
+      setOffAir((current) => rememberOffAir(current, station.uuid))
       // Streams die quietly and often; walk down the visible list rather than
-      // leaving the listener on a dead signal.
+      // leaving the listener on a dead signal. Say so, though: silently landing
+      // on a different station reads as a bug.
       if (skips.current >= MAX_CONSECUTIVE_SKIPS) return
       const list = activeListRef.current
       const index = list.findIndex((item) => item.uuid === station.uuid)
-      const next = index >= 0 ? list[index + 1] : undefined
+      const next = list.slice(index + 1).find((item) => playable(offAirRef.current, item))
       if (!next) return
       skips.current += 1
+      setSkipped(station.name)
       setSelected(next)
       player.play(next)
     },
@@ -118,20 +130,39 @@ export default function App() {
     },
   })
 
+  /**
+   * Browsing only offers stations that can play. Saved and Recent show
+   * everything — the listener put those there on purpose, and quietly deleting
+   * them would be worse than marking them.
+   */
   const activeList = useMemo(() => {
-    if (tab === 'search') return results
+    if (tab === 'search') return results.filter((station) => playable(offAir, station))
     if (tab === 'favourites') return favourites
     if (tab === 'history') return history.map((entry) => entry.station)
-    return countryStations
-  }, [tab, results, favourites, history, countryStations])
+    return countryStations.filter((station) => playable(offAir, station))
+  }, [tab, results, favourites, history, countryStations, offAir])
+
+  /** Rows on screen that cannot be played, and what to tell the listener. */
+  const blocked = useMemo(() => {
+    const notes = new Map<string, string>()
+    for (const station of activeList) {
+      const reason = blockedReason(offAir, station)
+      if (reason) notes.set(station.uuid, reason)
+    }
+    return notes
+  }, [activeList, offAir])
 
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
+
+  const offAirRef = useRef(offAir)
+  offAirRef.current = offAir
 
   /** Everything we can place on the globe, published coordinates or estimated. */
   const points = useMemo(() => {
     const placed: Placed[] = []
     for (const station of catalog.stations.values()) {
+      if (isOffAir(offAir, station)) continue
       const session = !!selectedCountry && station.countryCode === selectedCountry
       if (station.lat !== null && station.lon !== null) {
         placed.push({ station, lat: station.lat, lon: station.lon, session })
@@ -144,7 +175,7 @@ export default function App() {
       if (estimate) placed.push({ station, lat: estimate.lat, lon: estimate.lon, session })
     }
     return placed
-  }, [catalog.stations, selectedCountry])
+  }, [catalog.stations, selectedCountry, offAir])
 
   const openCountry = useCallback(
     async (code: string, centre?: { lat: number; lon: number }) => {
@@ -174,6 +205,7 @@ export default function App() {
   const playStation = useCallback(
     (station: Station) => {
       setSelected(station)
+      setSkipped(null)
       skips.current = 0
       player.play(station)
       if (station.lat !== null && station.lon !== null) {
@@ -247,7 +279,9 @@ export default function App() {
 
   const tuneRandom = useCallback(async () => {
     const recent = new Set(history.slice(0, 25).map((entry) => entry.station.uuid))
-    const pool = [...catalog.stations.values()].filter((station) => !recent.has(station.uuid))
+    const pool = [...catalog.stations.values()].filter(
+      (station) => !recent.has(station.uuid) && playable(offAir, station),
+    )
     if (pool.length) {
       playStation(pool[Math.floor(Math.random() * pool.length)])
       return
@@ -258,7 +292,7 @@ export default function App() {
       catalog.remember(remote)
       playStation(pick)
     }
-  }, [catalog, history, playStation])
+  }, [catalog, history, offAir, playStation])
 
   // Keyboard control, matching the desktop plugin's bindings.
   useEffect(() => {
@@ -412,7 +446,9 @@ export default function App() {
           ? 'Stations you play show up here.'
           : countryLoading
             ? 'Loading stations…'
-            : `${handheld ? 'Tap' : 'Click'} a country on the globe to browse its stations.`
+            : countryStations.length
+              ? 'Every station here is off air right now.'
+              : `${handheld ? 'Tap' : 'Click'} a country on the globe to browse its stations.`
 
   const counts: Partial<Record<Tab, number>> = {
     favourites: favourites.length,
@@ -537,6 +573,7 @@ export default function App() {
             selectedUuid={selected?.uuid ?? null}
             playingUuid={player.station?.uuid ?? null}
             favouriteUuids={favouriteUuids}
+            blocked={blocked}
             emptyMessage={emptyMessage}
             busy={busy}
             onPlay={playFromList}
@@ -547,6 +584,7 @@ export default function App() {
         <Player
           player={player}
           isFavourite={!!player.station && favouriteUuids.has(player.station.uuid)}
+          skipped={skipped}
           onToggleFavourite={onToggleFavourite}
           onRandom={() => void tuneRandom()}
         />

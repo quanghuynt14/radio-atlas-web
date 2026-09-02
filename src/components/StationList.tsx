@@ -7,6 +7,8 @@ interface Props {
   selectedUuid: string | null
   playingUuid: string | null
   favouriteUuids: Set<string>
+  /** Rows that cannot be played, mapped to what to say about them. */
+  blocked: Map<string, string>
   emptyMessage: string
   busy: boolean
   onPlay: (station: Station) => void
@@ -27,6 +29,7 @@ export default function StationList({
   selectedUuid,
   playingUuid,
   favouriteUuids,
+  blocked,
   emptyMessage,
   busy,
   onPlay,
@@ -74,6 +77,7 @@ export default function StationList({
       {visible.map((station) => {
         const isFavourite = favouriteUuids.has(station.uuid)
         const isPlaying = station.uuid === playingUuid
+        const blockedNote = blocked.get(station.uuid)
         return (
           <li
             key={station.uuid}
@@ -82,6 +86,7 @@ export default function StationList({
               'station',
               station.uuid === selectedUuid ? 'is-selected' : '',
               isPlaying ? 'is-playing' : '',
+              blockedNote ? 'is-off-air' : '',
             ]
               .filter(Boolean)
               .join(' ')}
@@ -106,7 +111,9 @@ export default function StationList({
               </span>
               <span className="station-text">
                 <span className="station-name">{station.name}</span>
-                <span className="station-meta">{describe(station) || 'Live stream'}</span>
+                <span className="station-meta">
+                  {blockedNote ?? (describe(station) || 'Live stream')}
+                </span>
               </span>
             </button>
             <button

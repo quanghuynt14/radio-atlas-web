@@ -6,6 +6,8 @@ import type { Station } from '../lib/types'
 interface Props {
   player: PlayerState
   isFavourite: boolean
+  /** Name of the station this one was reached by skipping past, if any. */
+  skipped: string | null
   onToggleFavourite: (station: Station) => void
   onRandom: () => void
 }
@@ -18,7 +20,7 @@ const STATUS_LABEL: Record<PlayerState['status'], string> = {
   error: 'Off air',
 }
 
-export default function Player({ player, isFavourite, onToggleFavourite, onRandom }: Props) {
+export default function Player({ player, isFavourite, skipped, onToggleFavourite, onRandom }: Props) {
   const { station, status } = player
   const busy = status === 'connecting'
   const live = status === 'playing' || busy
@@ -58,6 +60,7 @@ export default function Player({ player, isFavourite, onToggleFavourite, onRando
           )}
         </p>
         {player.error ? <p className="player-error">{player.error}</p> : null}
+        {!player.error && skipped ? <p className="player-note">Skipped {skipped} — it was off air.</p> : null}
       </div>
 
       <div className="player-actions">

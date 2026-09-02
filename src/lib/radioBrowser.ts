@@ -1,3 +1,4 @@
+import { reachable } from './availability'
 import type { Station } from './types'
 
 /**
@@ -46,12 +47,16 @@ function finite(value: unknown): number | null {
 
 /**
  * Normalises a directory row and drops anything we cannot play or trust:
- * missing uuid, non-http(s) url, or coordinates outside the real range.
+ * missing uuid, non-http(s) url, a stream this page could never load, or
+ * coordinates outside the real range.
  */
 function normalise(raw: RawStation): Station | null {
   const uuid = typeof raw.stationuuid === 'string' ? raw.stationuuid.trim() : ''
   const url = (raw.url_resolved || raw.url || '').trim()
   if (!uuid || !/^https?:\/\//i.test(url)) return null
+  // An https page cannot load an http stream, so such a station is not a
+  // station here — better absent than offered and instantly dead.
+  if (!reachable(url)) return null
 
   const lat = finite(raw.geo_lat)
   const lon = finite(raw.geo_long)

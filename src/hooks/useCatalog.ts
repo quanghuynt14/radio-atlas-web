@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Station } from '../lib/types'
+import { reachable } from '../lib/availability'
 import { fetchByCountry, fetchGeolocated, searchStations } from '../lib/radioBrowser'
 import { COUNTRY_TTL, WORLD_KEY, WORLD_TTL, countryKey, put, readFresh, readStale } from '../lib/cache'
 
@@ -18,6 +19,14 @@ export interface Catalog {
   /** Cached matches immediately, with directory results merged in when they land. */
   search: (term: string) => Promise<Station[]>
   remember: (stations: Station[]) => void
+}
+
+/**
+ * The cache predates the reachability rule and outlives a move between http and
+ * https, so rows coming back from it are filtered the way fresh ones are.
+ */
+function usable(rows: Station[] | null | undefined): Station[] {
+  return rows ? rows.filter((station) => reachable(station.url)) : []
 }
 
 function merge(previous: Map<string, Station>, incoming: Station[]): Map<string, Station> {
@@ -47,8 +56,8 @@ export function useCatalog(): Catalog {
     let cancelled = false
 
     async function loadWorld() {
-      const cached = await readStale<Station[]>(WORLD_KEY)
-      if (cached?.length && !cancelled) {
+      const cached = usable(await readStale<Station[]>(WORLD_KEY))
+      if (cached.length && !cancelled) {
         remember(cached)
         setLoading(false)
       }
@@ -93,13 +102,13 @@ export function useCatalog(): Catalog {
 
       const request = (async () => {
         const key = countryKey(code)
-        const cached = await readFresh<Station[]>(key, COUNTRY_TTL)
-        if (cached?.length) {
+        const cached = usable(await readFresh<Station[]>(key, COUNTRY_TTL))
+        if (cached.length) {
           remember(cached)
           return cached
         }
-        const stale = await readStale<Station[]>(key)
-        if (stale?.length) remember(stale)
+        const stale = usable(await readStale<Station[]>(key))
+        if (stale.length) remember(stale)
         try {
           const fresh = await fetchByCountry(code)
           if (fresh.length) {
@@ -107,9 +116,9 @@ export function useCatalog(): Catalog {
             void put(key, fresh)
             return fresh
           }
-          return stale ?? []
+          return stale
         } catch {
-          return stale ?? []
+          return stale
         } finally {
           countryRequests.current.delete(code)
         }

@@ -20,8 +20,10 @@ npm run build      # production bundle into dist/
 
 Prefer serving over `http://localhost` in development. A page served over
 `https` cannot load a station that streams over plain `http`, and roughly a
-third of the directory still does; the player detects this case and says so
-instead of failing silently.
+third of the directory still does — over https those stations are left out of
+the catalog entirely, so the same build shows more stations locally than it
+does deployed. That is the intent: see [Only what can
+play](#only-what-can-play).
 
 ## Controls
 
@@ -57,11 +59,36 @@ default; the control on the globe cycles system, light and dark.
 | `lib/countries.ts` | Natural Earth outlines joined to ISO alpha-2 codes; country hit-testing and centroids |
 | `lib/projection.ts` | cobe's projection in TypeScript, so the globe can be clicked |
 | `lib/markers.ts` | Which signals get drawn at a given zoom, and how big |
+| `lib/availability.ts` | What this page can play, and what it has learned cannot |
 | `lib/state.ts` | Favourites, history and volume in `localStorage` |
 | `hooks/useCatalog.ts` | Progressive world load, country browsing, search |
 | `hooks/usePlayer.ts` | Stream playback, mixed-content detection, skip-on-failure |
 | `components/Globe.tsx` | cobe globe plus a 2D overlay for labels, rings and country outlines |
 | `lib/theme.ts` | Theme preference, resolved to the `data-theme` the globe palette reads |
+
+### Only what can play
+
+Clicking a station and being bounced to a different one reads as a bug, so the
+aim is that a station on screen is a station that plays.
+
+The directory's `hidebroken` filter runs from a server and says nothing about
+the two ways a stream dies in a browser. The first is mixed content: a page
+served over `https` cannot load a stream served over plain `http`, and about a
+third of the directory still streams that way. Those never enter the catalog —
+absent is better than offered and instantly dead.
+
+The second only shows up when you try. A stream that fails is remembered in
+`localStorage` for three days, and while the mark stands that station is kept
+out of the globe, country lists, search results and shuffle. Three days rather
+than forever, because a station off the air today is often back next week, and
+playing one successfully clears its mark immediately.
+
+Saved and Recent are the exception: they show everything, with the unplayable
+rows marked rather than removed. The listener put those there on purpose, and
+deleting them quietly would be worse than saying why they will not play.
+
+When a stream does fail mid-listen the player still falls through to the next
+station in the list, but now says which one it skipped.
 
 ### Why signals thin out
 
