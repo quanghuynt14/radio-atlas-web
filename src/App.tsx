@@ -1,22 +1,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Globe, { type Placed } from './components/Globe'
-import Player from './components/Player'
+import Globe, { type GlobeHandle, type Placed } from './components/Globe'
+import Icon, { type IconName } from './components/Icon'
+import Player, { MiniPlayer } from './components/Player'
 import StationList from './components/StationList'
 import { useCatalog } from './hooks/useCatalog'
+import { useMediaQuery } from './hooks/useMediaQuery'
 import { usePlayer } from './hooks/usePlayer'
 import { countryName, estimateLocation, type Country } from './lib/countries'
 import { fetchRandom } from './lib/radioBrowser'
 import { loadState, pushHistory, saveState, toggleFavourite } from './lib/state'
+import { applyTheme, loadThemePreference, saveThemePreference, watchSystemTheme, type ThemePreference } from './lib/theme'
 import type { Station } from './lib/types'
 
 type Tab = 'country' | 'search' | 'favourites' | 'history'
+type Sheet = 'peek' | 'full'
 
 /** How many dead streams to skip past before giving up on a list. */
 const MAX_CONSECUTIVE_SKIPS = 5
 
+/** Below this the panel becomes a bottom sheet over a full-bleed globe. */
+const HANDHELD = '(max-width: 860px)'
+
+const ZOOM_STEP = 1.4
+
+const THEME_CYCLE: Record<ThemePreference, ThemePreference> = {
+  system: 'light',
+  light: 'dark',
+  dark: 'system',
+}
+
+const THEME_ICON: Record<ThemePreference, IconName> = {
+  system: 'monitor',
+  light: 'sun',
+  dark: 'moon',
+}
+
+const TABS: { id: Tab; icon: IconName; label: string }[] = [
+  { id: 'country', icon: 'globe', label: 'Country' },
+  { id: 'search', icon: 'search', label: 'Search' },
+  { id: 'favourites', icon: 'star', label: 'Saved' },
+  { id: 'history', icon: 'clock', label: 'Recent' },
+]
+
 export default function App() {
   const catalog = useCatalog()
   const initial = useRef(loadState()).current
+  const handheld = useMediaQuery(HANDHELD)
 
   const [favourites, setFavourites] = useState(initial.favourites)
   const [history, setHistory] = useState(initial.history)
@@ -29,12 +58,24 @@ export default function App() {
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState<Station | null>(null)
   const [focus, setFocus] = useState<{ lat: number; lon: number } | null>(null)
+  const [theme, setTheme] = useState<ThemePreference>(loadThemePreference)
+  const [sheet, setSheet] = useState<Sheet>('peek')
 
   const searchRef = useRef<HTMLInputElement>(null)
+  const globeRef = useRef<GlobeHandle>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  const sheetRef = useRef(sheet)
+  sheetRef.current = sheet
   const skips = useRef(0)
   const volumeRef = useRef({ volume: initial.volume, muted: initial.muted })
 
   const favouriteUuids = useMemo(() => new Set(favourites.map((s) => s.uuid)), [favourites])
+
+  useEffect(() => {
+    applyTheme(theme)
+    saveThemePreference(theme)
+    return watchSystemTheme(() => applyTheme(theme))
+  }, [theme])
 
   const persist = useCallback(
     (next: Partial<{ favourites: Station[]; history: typeof history }>) => {
@@ -124,6 +165,8 @@ export default function App() {
   const onPickCountry = useCallback(
     (country: Country) => {
       void openCountry(country.code, { lat: country.lat, lon: country.lon })
+      // Asking for a country is asking to see its stations.
+      setSheet('full')
     },
     [openCountry],
   )
@@ -146,6 +189,15 @@ export default function App() {
       }
     },
     [catalog, player, selectedCountry],
+  )
+
+  /** Playing from the list is the end of browsing, so hand the globe back. */
+  const playFromList = useCallback(
+    (station: Station) => {
+      playStation(station)
+      setSheet('peek')
+    },
+    [playStation],
   )
 
   const onToggleFavourite = useCallback(
@@ -187,6 +239,12 @@ export default function App() {
     [catalog],
   )
 
+  const clearSearch = useCallback(() => {
+    setTerm('')
+    setResults([])
+    searchRef.current?.focus()
+  }, [])
+
   const tuneRandom = useCallback(async () => {
     const recent = new Set(history.slice(0, 25).map((entry) => entry.station.uuid))
     const pool = [...catalog.stations.values()].filter((station) => !recent.has(station.uuid))
@@ -207,6 +265,9 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       const typing = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
+      // Space and Enter belong to whatever control has focus; stealing them
+      // would fire the button and the shortcut at once.
+      const onControl = !!target?.closest('button, a, [role="button"]')
 
       if (event.key === 'Escape') {
         if (term) {
@@ -214,11 +275,13 @@ export default function App() {
           setResults([])
         }
         searchRef.current?.blur()
+        setSheet('peek')
         return
       }
       if (event.key === '/' && !typing) {
         event.preventDefault()
-        searchRef.current?.focus()
+        setSheet('full')
+        requestAnimationFrame(() => searchRef.current?.focus())
         return
       }
       if (typing) return
@@ -236,9 +299,10 @@ export default function App() {
           if (list.length) setSelected(list[Math.max(0, index - 1)])
           break
         case 'Enter':
-          if (selected) playStation(selected)
+          if (!onControl && selected) playStation(selected)
           break
         case ' ':
+          if (onControl) break
           event.preventDefault()
           player.toggle()
           break
@@ -271,25 +335,95 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onToggleFavourite, player, playStation, selected, term, tuneRandom])
 
+  // --- the bottom sheet ----------------------------------------------------
+  // The drag writes transforms straight onto the element: re-rendering a list of
+  // stations on every pointer move would drop frames on exactly the devices that
+  // need them most. A drag that travelled also has to swallow the click it ends
+  // with, or letting go would toggle the sheet straight back.
+  const suppressClick = useRef(false)
+
+  const dragSheet = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const panel = panelRef.current
+    if (!panel || event.button !== 0) return
+    suppressClick.current = false
+
+    const startY = event.clientY
+    const height = panel.getBoundingClientRect().height
+    const from = sheetRef.current === 'full' ? 0 : height
+    let offset = from
+    let moved = false
+
+    const onMove = (move: PointerEvent) => {
+      const delta = move.clientY - startY
+      if (!moved && Math.abs(delta) > 4) {
+        moved = true
+        panel.dataset.dragging = 'true'
+      }
+      offset = Math.min(height, Math.max(0, from + delta))
+      panel.style.transform = `translate3d(0, ${offset}px, 0)`
+    }
+
+    const release = () => {
+      panel.style.transform = ''
+      delete panel.dataset.dragging
+    }
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      if (!moved) {
+        release()
+        return
+      }
+      suppressClick.current = true
+      setSheet(offset < height / 2 ? 'full' : 'peek')
+      // Hand the transform back to CSS only once the new state is on the
+      // element, or the sheet snaps to its old resting place for a frame.
+      requestAnimationFrame(release)
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  }, [])
+
+  /** Runs an action unless the pointer that ended on it had been dragging. */
+  const guarded = useCallback((action: () => void) => () => {
+    if (suppressClick.current) {
+      suppressClick.current = false
+      return
+    }
+    action()
+  }, [])
+
+  const busy = tab === 'search' ? searching : tab === 'country' ? countryLoading : false
+
   const emptyMessage =
     tab === 'search'
       ? searching
         ? 'Searching the directory…'
         : term
           ? 'No stations match that name.'
-          : 'Type to search every station in the directory.'
+          : 'Search every station in the directory by name.'
       : tab === 'favourites'
         ? 'Star a station to keep it here.'
         : tab === 'history'
           ? 'Stations you play show up here.'
           : countryLoading
             ? 'Loading stations…'
-            : 'Click a country on the globe to browse its stations.'
+            : `${handheld ? 'Tap' : 'Click'} a country on the globe to browse its stations.`
+
+  const counts: Partial<Record<Tab, number>> = {
+    favourites: favourites.length,
+    history: history.length,
+  }
 
   return (
-    <div className="app">
+    <div className="app" data-sheet={handheld ? sheet : undefined}>
       <main className="stage">
         <Globe
+          ref={globeRef}
           points={points}
           selectedCountry={selectedCountry}
           playingUuid={player.station?.uuid ?? null}
@@ -298,38 +432,100 @@ export default function App() {
           onPickStation={playStation}
           onPickCountry={onPickCountry}
         />
-        <div className="stage-status">
-          {catalog.error ? (
-            <span className="warn">{catalog.error}</span>
-          ) : (
-            <span>
-              {catalog.loaded.toLocaleString()} stations
-              {catalog.loading ? ' · loading more…' : ''}
-            </span>
-          )}
+
+        <div className="stage-top">
+          <p className="brand">
+            <Icon name="broadcast" size={17} />
+            <span>Radio Atlas</span>
+          </p>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setTheme(THEME_CYCLE[theme])}
+            title={`Theme: ${theme}`}
+            aria-label={`Theme: ${theme}. Switch to ${THEME_CYCLE[theme]}.`}
+          >
+            <Icon name={THEME_ICON[theme]} size={17} />
+          </button>
+        </div>
+
+        <div className="stage-foot">
+          <p className="stage-status">
+            {catalog.error ? (
+              <span className="warn">{catalog.error}</span>
+            ) : (
+              <>
+                <span className="stage-count">{catalog.loaded.toLocaleString()}</span> stations
+                {catalog.loading ? <span className="stage-more"> · loading</span> : null}
+              </>
+            )}
+          </p>
+          <div className="zoom" role="group" aria-label="Zoom">
+            <button type="button" className="ghost" onClick={() => globeRef.current?.zoomBy(ZOOM_STEP)} aria-label="Zoom in">
+              <Icon name="plus" size={16} />
+            </button>
+            <button type="button" className="ghost" onClick={() => globeRef.current?.resetZoom()} aria-label="Reset zoom">
+              <Icon name="target" size={16} />
+            </button>
+            <button type="button" className="ghost" onClick={() => globeRef.current?.zoomBy(1 / ZOOM_STEP)} aria-label="Zoom out">
+              <Icon name="minus" size={16} />
+            </button>
+          </div>
         </div>
       </main>
 
-      <aside className="panel">
+      {handheld ? (
+        <button type="button" className="scrim" tabIndex={-1} aria-label="Close the station list" onClick={() => setSheet('peek')} />
+      ) : null}
+
+      <aside className="panel" ref={panelRef}>
+        {handheld ? (
+          <button
+            type="button"
+            className="grabber"
+            onPointerDown={dragSheet}
+            onClick={guarded(() => setSheet('peek'))}
+            aria-expanded={sheet === 'full'}
+            aria-label="Collapse the station list"
+          >
+            <span className="grabber-bar" />
+          </button>
+        ) : null}
+
         <header className="panel-head">
-          <h1>Radio Atlas</h1>
-          <input
-            ref={searchRef}
-            className="search"
-            type="search"
-            placeholder="Search stations  ( / )"
-            value={term}
-            onChange={(event) => void runSearch(event.target.value)}
-          />
-          <nav className="tabs">
-            {(['country', 'search', 'favourites', 'history'] as Tab[]).map((name) => (
+          <div className="search-field">
+            <Icon name="search" size={16} className="search-icon" />
+            <input
+              ref={searchRef}
+              className="search"
+              type="search"
+              enterKeyHint="search"
+              placeholder={handheld ? 'Search stations' : 'Search stations  ( / )'}
+              value={term}
+              onFocus={() => setSheet('full')}
+              onChange={(event) => void runSearch(event.target.value)}
+            />
+            {term ? (
+              <button type="button" className="search-clear" onClick={clearSearch} aria-label="Clear search">
+                <Icon name="close" size={14} />
+              </button>
+            ) : null}
+          </div>
+
+          <nav className="tabs" aria-label="Station lists">
+            {TABS.map(({ id, icon, label }) => (
               <button
-                key={name}
+                key={id}
                 type="button"
-                className={tab === name ? 'tab is-active' : 'tab'}
-                onClick={() => setTab(name)}
+                className={tab === id ? 'tab is-active' : 'tab'}
+                aria-current={tab === id ? 'page' : undefined}
+                onClick={() => setTab(id)}
               >
-                {name === 'country' ? (selectedCountry ? countryName(selectedCountry) : 'Country') : name}
+                <Icon name={id === 'favourites' && favourites.length ? 'starFilled' : icon} size={14} />
+                <span className="tab-label">
+                  {id === 'country' && selectedCountry ? countryName(selectedCountry) : label}
+                </span>
+                {counts[id] ? <span className="tab-count">{counts[id]}</span> : null}
               </button>
             ))}
           </nav>
@@ -342,8 +538,8 @@ export default function App() {
             playingUuid={player.station?.uuid ?? null}
             favouriteUuids={favouriteUuids}
             emptyMessage={emptyMessage}
-            onSelect={setSelected}
-            onPlay={playStation}
+            busy={busy}
+            onPlay={playFromList}
             onToggleFavourite={onToggleFavourite}
           />
         </div>
@@ -355,6 +551,8 @@ export default function App() {
           onRandom={() => void tuneRandom()}
         />
       </aside>
+
+      {handheld ? <MiniPlayer player={player} onOpen={guarded(() => setSheet('full'))} onGrab={dragSheet} /> : null}
     </div>
   )
 }

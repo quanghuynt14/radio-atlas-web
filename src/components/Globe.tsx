@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import createGlobe, { type Marker } from 'cobe'
 import { geoOrthographic, geoPath } from 'd3-geo'
 import type { FeatureCollection } from 'geojson'
@@ -15,6 +15,12 @@ export interface Placed {
   session: boolean
 }
 
+/** Zoom is driven from outside for the on-screen controls and keyboard. */
+export interface GlobeHandle {
+  zoomBy: (factor: number) => void
+  resetZoom: () => void
+}
+
 interface Props {
   points: Placed[]
   selectedCountry: string | null
@@ -28,7 +34,9 @@ interface Props {
 
 const MIN_SCALE = 0.85
 const MAX_SCALE = 9
-const HIT_RADIUS = 11
+/** Pick radius in CSS pixels — a fingertip needs a wider net than a cursor. */
+const HIT_RADIUS_MOUSE = 11
+const HIT_RADIUS_TOUCH = 22
 const IDLE_SPIN_RAD_PER_SEC = 0.045
 const IDLE_DELAY_MS = 3500
 /** cobe redraws every marker each frame, so keep the buffer to a sane size. */
@@ -77,15 +85,10 @@ function readTheme(): Theme {
   }
 }
 
-export default function Globe({
-  points,
-  selectedCountry,
-  playingUuid,
-  selectedUuid,
-  focus,
-  onPickStation,
-  onPickCountry,
-}: Props) {
+const Globe = forwardRef<GlobeHandle, Props>(function Globe(
+  { points, selectedCountry, playingUuid, selectedUuid, focus, onPickStation, onPickCountry },
+  ref,
+) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const globeCanvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -102,12 +105,26 @@ export default function Globe({
   const geometry = useRef<{ countries: Country[]; land: FeatureCollection } | null>(null)
   const theme = useRef<Theme>(readTheme())
   const markersDirty = useRef(true)
+  const hitRadius = useRef(HIT_RADIUS_MOUSE)
 
   const data = useRef({ points, selectedCountry, playingUuid, selectedUuid })
   data.current = { points, selectedCountry, playingUuid, selectedUuid }
 
   const callbacks = useRef({ onPickStation, onPickCountry })
   callbacks.current = { onPickStation, onPickCountry }
+
+  // The render loop reads scale off the ref every frame, so the controls can
+  // write straight to it without a re-render.
+  useImperativeHandle(ref, () => ({
+    zoomBy: (factor) => {
+      view.current.scale = clamp(view.current.scale * factor, MIN_SCALE, MAX_SCALE)
+      lastInteraction.current = performance.now()
+    },
+    resetZoom: () => {
+      view.current.scale = 1
+      lastInteraction.current = performance.now()
+    },
+  }), [])
 
   useEffect(() => {
     let cancelled = false
@@ -144,6 +161,7 @@ export default function Globe({
     let frame = 0
     let previous = performance.now()
     let disposed = false
+    const stillness = window.matchMedia('(prefers-reduced-motion: reduce)')
 
     const buildMarkers = (): Marker[] => {
       const { points: all, playingUuid: playing, selectedUuid: chosen } = data.current
@@ -217,7 +235,7 @@ export default function Globe({
 
     const nearest = (x: number, y: number): Placed | null => {
       let best: Placed | null = null
-      let bestDistance = HIT_RADIUS * HIT_RADIUS
+      let bestDistance = hitRadius.current * hitRadius.current
       for (const placed of data.current.points) {
         const position = project(placed.lat, placed.lon, view.current)
         if (!position.visible) continue
@@ -277,7 +295,8 @@ export default function Globe({
       }
 
       ring(data.current.selectedUuid, 9, colours.outline, 0.9)
-      ring(data.current.playingUuid, 11 + Math.sin(now / 340) * 3.5, colours.labelText, 0.5)
+      const pulse = stillness.matches ? 12 : 11 + Math.sin(now / 340) * 3.5
+      ring(data.current.playingUuid, pulse, colours.labelText, 0.5)
 
       const cursor = pointer.current
       hovered.current = cursor && !dragging.current ? nearest(cursor.x, cursor.y) : null
@@ -318,7 +337,7 @@ export default function Globe({
           view.current.theta = goal.theta
           target.current = null
         }
-      } else if (!dragging.current && now - lastInteraction.current > IDLE_DELAY_MS) {
+      } else if (!dragging.current && !stillness.matches && now - lastInteraction.current > IDLE_DELAY_MS) {
         view.current.phi += (IDLE_SPIN_RAD_PER_SEC * elapsed) / 1000
       }
       // Keep phi bounded so a globe left spinning overnight stays precise.
@@ -350,35 +369,80 @@ export default function Globe({
 
     let dragOrigin = { x: 0, y: 0 }
     let viewOrigin = { phi: 0, theta: 0 }
+    /** Every pointer currently down, so two fingers can pinch. */
+    const contacts = new Map<number, { x: number; y: number }>()
+    let pinch: { span: number; scale: number } | null = null
+
+    const span = () => {
+      const [a, b] = [...contacts.values()]
+      return Math.hypot(a.x - b.x, a.y - b.y)
+    }
+
+    const beginDrag = (from: { x: number; y: number }) => {
+      dragOrigin = from
+      viewOrigin = { phi: view.current.phi, theta: view.current.theta }
+      dragging.current = true
+      target.current = null
+    }
 
     const onPointerDown = (event: PointerEvent) => {
       overlay.setPointerCapture(event.pointerId)
-      dragging.current = true
-      dragged.current = false
-      target.current = null
-      dragOrigin = local(event)
-      viewOrigin = { phi: view.current.phi, theta: view.current.theta }
+      contacts.set(event.pointerId, local(event))
+      hitRadius.current = event.pointerType === 'mouse' ? HIT_RADIUS_MOUSE : HIT_RADIUS_TOUCH
       lastInteraction.current = performance.now()
+
+      if (contacts.size === 2) {
+        // A second finger takes over as a pinch, and rules out a tap.
+        dragging.current = false
+        dragged.current = true
+        pinch = { span: span(), scale: view.current.scale }
+        return
+      }
+      dragged.current = false
+      beginDrag(local(event))
     }
 
     const onPointerMove = (event: PointerEvent) => {
-      pointer.current = local(event)
+      const point = local(event)
+      pointer.current = point
+      if (contacts.has(event.pointerId)) contacts.set(event.pointerId, point)
+
+      if (pinch && contacts.size === 2) {
+        const current = span()
+        if (pinch.span > 0) {
+          view.current.scale = clamp((pinch.scale * current) / pinch.span, MIN_SCALE, MAX_SCALE)
+        }
+        lastInteraction.current = performance.now()
+        return
+      }
+
       if (!dragging.current) return
-      const dx = pointer.current.x - dragOrigin.x
-      const dy = pointer.current.y - dragOrigin.y
+      const dx = point.x - dragOrigin.x
+      const dy = point.y - dragOrigin.y
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragged.current = true
       // Radians per pixel shrinks with zoom, so the surface keeps up with the
-      // cursor at every scale.
+      // pointer at every scale. Both axes track it directly: drag right and the
+      // surface travels right, the way a hand on a real globe would move it.
       const perPixel = 1 / globeRadius(view.current)
-      view.current.phi = viewOrigin.phi - dx * perPixel
+      view.current.phi = viewOrigin.phi + dx * perPixel
       view.current.theta = clamp(viewOrigin.theta + dy * perPixel, -Math.PI / 2 + 0.05, Math.PI / 2 - 0.05)
       lastInteraction.current = performance.now()
     }
 
     const endDrag = (event: PointerEvent) => {
-      if (!dragging.current) return
-      dragging.current = false
+      contacts.delete(event.pointerId)
       if (overlay.hasPointerCapture(event.pointerId)) overlay.releasePointerCapture(event.pointerId)
+      // A finger has no resting position, so the hover label goes with it.
+      if (event.pointerType !== 'mouse') pointer.current = null
+
+      if (contacts.size === 1) {
+        pinch = null
+        // One finger left after a pinch — carry on rotating from where it is.
+        beginDrag([...contacts.values()][0])
+      } else if (!contacts.size) {
+        pinch = null
+        dragging.current = false
+      }
       lastInteraction.current = performance.now()
     }
 
@@ -439,11 +503,13 @@ export default function Globe({
         className="globe-overlay"
         ref={overlayRef}
         role="img"
-        aria-label="Rotatable globe of live radio stations"
+        aria-label="Rotatable globe of live radio stations. Drag to spin, pinch or scroll to zoom, tap a country to browse it."
       />
     </div>
   )
-}
+})
+
+export default Globe
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))

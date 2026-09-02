@@ -25,12 +25,15 @@ instead of failing silently.
 
 ## Controls
 
+The globe is direct manipulation: drag it and the surface goes where the pointer
+goes, on both axes.
+
 | Input | Action |
 | --- | --- |
 | Drag globe | Rotate |
-| Wheel over globe | Zoom |
-| Click signal | Play station |
-| Click country | Browse country |
+| Wheel / pinch over globe | Zoom |
+| Click or tap a signal | Play station |
+| Click or tap a country | Browse country |
 | `/` | Focus search |
 | Up / Down | Move through stations |
 | Enter | Play selected station |
@@ -39,7 +42,11 @@ instead of failing silently.
 | `F` | Favourite selected station |
 | `+` / `-` | Raise or lower volume |
 | `M` | Mute or unmute |
-| Escape | Clear search |
+| Escape | Clear search, close the sheet |
+
+On a phone the globe takes the whole screen, with a now-playing bar at the
+bottom that drags up into the full station list. The theme follows the system by
+default; the control on the globe cycles system, light and dark.
 
 ## How it fits together
 
@@ -53,6 +60,7 @@ instead of failing silently.
 | `hooks/useCatalog.ts` | Progressive world load, country browsing, search |
 | `hooks/usePlayer.ts` | Stream playback, mixed-content detection, skip-on-failure |
 | `components/Globe.tsx` | cobe globe plus a 2D overlay for labels, rings and country outlines |
+| `lib/theme.ts` | Theme preference, resolved to the `data-theme` the globe palette reads |
 
 ### Why the projection is duplicated
 

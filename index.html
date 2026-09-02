@@ -1,10 +1,32 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Radio Atlas</title>
     <meta name="description" content="Explore live radio stations from around the world on a rotatable globe." />
+    <meta name="theme-color" content="#06090f" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="apple-mobile-web-app-title" content="Radio Atlas" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <script>
+      // Stamp the theme before first paint so the page never flashes the wrong
+      // one. The key and the resolution rule mirror src/lib/theme.ts.
+      try {
+        var saved = localStorage.getItem('radio-atlas:theme')
+        var preference = saved === 'light' || saved === 'dark' ? saved : 'system'
+        var theme =
+          preference === 'system'
+            ? window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+            : preference
+        document.documentElement.dataset.theme = theme
+        document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#06090f' : '#eef1f8'
+      } catch (error) {
+        document.documentElement.dataset.theme = 'dark'
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
