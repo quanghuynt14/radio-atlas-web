@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Station } from '../lib/types'
+import { reachable } from '../lib/availability'
 import { reportClick } from '../lib/radioBrowser'
 
 export type PlayerStatus = 'idle' | 'connecting' | 'playing' | 'paused' | 'error'
@@ -15,15 +16,6 @@ export interface Player {
   stop: () => void
   setVolume: (value: number) => void
   toggleMute: () => void
-}
-
-/**
- * A stream served over http cannot be loaded by a page served over https, and
- * the browser reports it as an opaque media error. Catch it up front so we can
- * say what actually went wrong.
- */
-function blockedByMixedContent(url: string): boolean {
-  return window.location.protocol === 'https:' && url.startsWith('http://')
 }
 
 interface Options {
@@ -100,9 +92,12 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
       setStation(next)
       setError(null)
 
-      if (blockedByMixedContent(next.url)) {
+      // http streams are filtered out of the catalog, but a favourite saved
+      // before that rule can still reach here. Say what is wrong rather than
+      // letting the browser report an opaque media error.
+      if (!reachable(next.url)) {
         setStatus('error')
-        setError('This station streams over plain http, which a secure page cannot load.')
+        setError('This station streams over plain http, which is not played here.')
         handlers.current.onFailure(next)
         return
       }

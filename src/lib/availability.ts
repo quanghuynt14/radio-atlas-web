@@ -1,16 +1,20 @@
 /**
- * What this page can play, and what it has learned cannot.
+ * What can be played, and what has been learned cannot.
  *
  * The directory's own `hidebroken` filter runs from a server, so it says
- * nothing about the two ways a stream dies in a browser: a page served over
- * https cannot load a stream served over plain http, and roughly a third of
- * the directory still streams that way. Offering those is offering a dead end
- * — the listener clicks, the player says "off air", and something else starts
+ * nothing about the two ways a stream dies in a browser. The first is plain
+ * http, which roughly a third of the directory still uses: a page served over
+ * https cannot load it at all. Offering those is offering a dead end — the
+ * listener clicks, the player says "off air", and something else starts
  * playing instead.
  *
- * So streams this page provably cannot reach never enter the catalog, and the
- * ones that turn out to be dead are remembered for a few days. Not forever: a
- * station off the air today is often back next week.
+ * So http streams are dropped outright rather than only where the page happens
+ * to be secure. The deployed site is https and always will be, and a rule that
+ * changed with the dev server's protocol only meant the catalog looked
+ * different locally than the one people actually use.
+ *
+ * The second way only shows up when you try, and those are remembered for a
+ * few days. Not forever: a station off the air today is often back next week.
  */
 import type { Station } from './types'
 
@@ -22,13 +26,8 @@ const MAX_ENTRIES = 500
 /** uuid to the time its stream last failed here. */
 export type OffAir = Record<string, number>
 
-/**
- * Whether this page could load the stream at all. A page served over https can
- * only load https; over http — a local dev server — everything is allowed.
- */
+/** Whether the stream is one we will play. Plain http never is. */
 export function reachable(url: string): boolean {
-  if (typeof window === 'undefined') return true
-  if (window.location.protocol !== 'https:') return true
   return !/^http:\/\//i.test(url)
 }
 
@@ -93,7 +92,7 @@ export function playable(register: OffAir, station: Station): boolean {
  * another try later, the other can never work from this page at all.
  */
 export function blockedReason(register: OffAir, station: Station): string | null {
-  if (!reachable(station.url)) return 'Insecure stream — a secure page cannot load it'
+  if (!reachable(station.url)) return 'Plain http stream — not played here'
   if (isOffAir(register, station)) return 'Off air here — tap to try again'
   return null
 }

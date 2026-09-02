@@ -18,12 +18,10 @@ npm run check      # types + projection and marker invariants
 npm run build      # production bundle into dist/
 ```
 
-Prefer serving over `http://localhost` in development. A page served over
-`https` cannot load a station that streams over plain `http`, and roughly a
-third of the directory still does — over https those stations are left out of
-the catalog entirely, so the same build shows more stations locally than it
-does deployed. That is the intent: see [Only what can
-play](#only-what-can-play).
+Roughly a third of the directory streams over plain `http`, which no `https`
+page can load. Those stations are left out of the catalog everywhere, dev
+included, so what you see locally is what the deployed site shows. See [Only
+what can play](#only-what-can-play).
 
 ## Controls
 
@@ -72,10 +70,14 @@ Clicking a station and being bounced to a different one reads as a bug, so the
 aim is that a station on screen is a station that plays.
 
 The directory's `hidebroken` filter runs from a server and says nothing about
-the two ways a stream dies in a browser. The first is mixed content: a page
-served over `https` cannot load a stream served over plain `http`, and about a
-third of the directory still streams that way. Those never enter the catalog —
-absent is better than offered and instantly dead.
+the two ways a stream dies in a browser. The first is plain `http`, which about
+a third of the directory still uses and no `https` page can load. Those never
+enter the catalog — absent is better than offered and instantly dead.
+
+The rule is unconditional rather than applied only on a secure page. The
+deployed site is `https` and always will be, and a rule that changed with the
+dev server's protocol only meant the catalog looked different locally from the
+one people actually use.
 
 The second only shows up when you try. A stream that fails is remembered in
 `localStorage` for three days, and while the mark stands that station is kept
