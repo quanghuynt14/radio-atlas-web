@@ -39,10 +39,37 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
   const handlers = useRef({ onPlay, onFailure, station })
   handlers.current = { onPlay, onFailure, station }
 
+  /**
+   * Each start of playback is an attempt. A dead stream reports itself twice
+   * (the element's `error` event and the rejected `play()`), and switching
+   * station or stopping mid-connect rejects the old attempt's `play()` with an
+   * AbortError. Only the current attempt may report a failure, and only once;
+   * without that, one dead station set off a chain of skips that marked
+   * healthy ones off-air too.
+   */
+  const attempt = useRef({ id: 0, station: null as Station | null, reported: false })
+
+  const begin = (next: Station | null) => {
+    attempt.current = { id: attempt.current.id + 1, station: next, reported: false }
+    return attempt.current.id
+  }
+
+  /** Reports the current attempt's station as failed, at most once. */
+  const fail = (id: number, message: string) => {
+    const current = attempt.current
+    if (current.id !== id || current.reported || !current.station) return
+    current.reported = true
+    setStatus('error')
+    setError(message)
+    handlers.current.onFailure(current.station)
+  }
+
   if (!audioRef.current && typeof Audio !== 'undefined') {
+    // No crossOrigin: nothing reads the audio through WebAudio, and asking for
+    // CORS made browsers refuse every stream whose server doesn't send the
+    // headers — healthy stations, then marked off-air for days.
     const audio = new Audio()
     audio.preload = 'none'
-    audio.crossOrigin = 'anonymous'
     audioRef.current = audio
   }
 
@@ -57,10 +84,9 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
     const onWaiting = () => setStatus((current) => (current === 'playing' ? 'connecting' : current))
     const onPause = () => setStatus((current) => (current === 'idle' ? current : 'paused'))
     const onAudioError = () => {
-      const failed = handlers.current.station
-      setStatus('error')
-      setError('Stream did not respond.')
-      if (failed) handlers.current.onFailure(failed)
+      // Stop empties the source, which is not a stream failing.
+      if (!audio.getAttribute('src')) return
+      fail(attempt.current.id, 'Stream did not respond.')
     }
 
     audio.addEventListener('playing', onPlaying)
@@ -89,6 +115,7 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
     (next: Station) => {
       const audio = audioRef.current
       if (!audio) return
+      const id = begin(next)
       setStation(next)
       setError(null)
 
@@ -96,9 +123,7 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
       // before that rule can still reach here. Say what is wrong rather than
       // letting the browser report an opaque media error.
       if (!reachable(next.url)) {
-        setStatus('error')
-        setError('This station streams over plain http, which is not played here.')
-        handlers.current.onFailure(next)
+        fail(id, 'This station streams over plain http, which is not played here.')
         return
       }
 
@@ -108,22 +133,26 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
       void audio
         .play()
         .then(() => {
+          if (attempt.current.id !== id) return
           reportClick(next.uuid)
           handlers.current.onPlay(next)
         })
         .catch((cause: unknown) => {
+          // Superseded by another station or by Stop: not this stream's fault.
+          if (attempt.current.id !== id) return
+          const name = cause instanceof DOMException ? cause.name : ''
+          if (name === 'AbortError') return
           // An autoplay rejection is the user's browser, not a dead stream, so
           // it must not trigger the skip-to-next-station path.
-          if (cause instanceof DOMException && cause.name === 'NotAllowedError') {
+          if (name === 'NotAllowedError') {
             setStatus('paused')
             setError('Your browser blocked playback. Press play to start it.')
             return
           }
-          setStatus('error')
-          setError('Could not connect to this stream.')
-          handlers.current.onFailure(next)
+          fail(id, 'Could not connect to this stream.')
         })
     },
+    // begin and fail only touch refs and state setters.
     [],
   )
 
@@ -131,11 +160,14 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
     const audio = audioRef.current
     if (!audio || !handlers.current.station) return
     if (audio.paused) {
+      const id = begin(handlers.current.station)
       setStatus('connecting')
       // Live streams have no meaningful buffered position: reloading the source
       // rejoins the broadcast instead of resuming minutes-old audio.
       audio.load()
-      void audio.play().catch(() => setStatus('paused'))
+      void audio.play().catch(() => {
+        if (attempt.current.id === id && !attempt.current.reported) setStatus('paused')
+      })
     } else {
       audio.pause()
     }
@@ -143,6 +175,7 @@ export function usePlayer({ initialVolume, initialMuted, onPlay, onFailure, onVo
 
   const stop = useCallback(() => {
     const audio = audioRef.current
+    begin(null)
     if (audio) {
       audio.pause()
       audio.removeAttribute('src')
