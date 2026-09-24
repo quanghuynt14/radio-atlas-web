@@ -2,6 +2,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import Icon from './Icon'
 import type { Player as PlayerState } from '../hooks/usePlayer'
 import type { Station } from '../lib/types'
+import { webUrl } from '../lib/url'
 
 interface Props {
   player: PlayerState
@@ -42,10 +43,10 @@ export default function Player({ player, isFavourite, skipped, onToggleFavourite
               <span className="truncate">
                 {[station.country, station.tags.slice(0, 2).join(', ')].filter(Boolean).join(' · ') || 'Live stream'}
               </span>
-              {station.homepage ? (
+              {webUrl(station.homepage) ? (
                 <a
                   className="player-link"
-                  href={station.homepage}
+                  href={webUrl(station.homepage)}
                   target="_blank"
                   rel="noreferrer noopener"
                   title="Open the station's website"
