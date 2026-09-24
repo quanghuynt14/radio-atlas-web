@@ -92,7 +92,8 @@ async function request<T>(path: string, params: Record<string, string | number |
   let lastError: unknown
 
   for (let attempt = 0; attempt < MIRRORS.length; attempt++) {
-    const base = MIRRORS[(preferred + attempt) % MIRRORS.length]
+    const index = (preferred + attempt) % MIRRORS.length
+    const base = MIRRORS[index]
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
     try {
@@ -102,7 +103,9 @@ async function request<T>(path: string, params: Record<string, string | number |
       })
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
       const body = (await response.json()) as T
-      preferred = (preferred + attempt) % MIRRORS.length
+      // The mirror that answered, not one recomputed from a `preferred` that
+      // an overlapping request may have moved since this one started.
+      preferred = index
       return body
     } catch (error) {
       lastError = error
