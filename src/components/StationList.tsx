@@ -4,6 +4,11 @@ import type { Station } from '../lib/types'
 
 interface Props {
   stations: Station[]
+  /**
+   * Which list this is (tab, country, search, sort). The array itself is
+   * rebuilt whenever a favourite or a play changes, which is not a new list.
+   */
+  listKey: string
   selectedUuid: string | null
   playingUuid: string | null
   favouriteUuids: Set<string>
@@ -26,6 +31,7 @@ function describe(station: Station): string {
 
 export default function StationList({
   stations,
+  listKey,
   selectedUuid,
   playingUuid,
   favouriteUuids,
@@ -39,17 +45,24 @@ export default function StationList({
   const sentinelRef = useRef<HTMLLIElement>(null)
   const [limit, setLimit] = useState(PAGE)
 
-  // A different list starts again from the top of the first page.
+  // A different list starts again from the top of the first page. Starring or
+  // playing only rebuilds the same list, and must not throw away the scroll.
   useEffect(() => {
     setLimit(PAGE)
-  }, [stations])
+  }, [listKey])
+
+  // Keyboard navigation can move the selection past the rendered rows; render
+  // up to it, so the row exists to scroll to.
+  const selectedIndex = selectedUuid ? stations.findIndex((station) => station.uuid === selectedUuid) : -1
+  const needed = selectedIndex >= limit ? Math.ceil((selectedIndex + 1) / PAGE) * PAGE : limit
+  if (needed !== limit) setLimit(needed)
 
   // Keyboard navigation moves the selection, so the selected row has to follow.
   useEffect(() => {
     if (!selectedUuid) return
     const row = listRef.current?.querySelector<HTMLElement>(`[data-uuid="${CSS.escape(selectedUuid)}"]`)
     row?.scrollIntoView({ block: 'nearest' })
-  }, [selectedUuid])
+  }, [selectedUuid, limit])
 
   useEffect(() => {
     const sentinel = sentinelRef.current

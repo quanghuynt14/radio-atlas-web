@@ -152,6 +152,14 @@ export default function App() {
     return notes
   }, [activeList, offAir])
 
+  /**
+   * Only what decides which list is showing. The array itself is rebuilt on
+   * every favourite, play or off-air change, which is not a new list, and
+   * playing a station also selects its country, which must not count as a
+   * new list on Saved or Recent.
+   */
+  const listKey = tab === 'search' ? `search|${term}` : tab === 'country' ? `country|${selectedCountry}` : tab
+
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
 
@@ -570,6 +578,7 @@ export default function App() {
         <div className="panel-list">
           <StationList
             stations={activeList}
+            listKey={listKey}
             selectedUuid={selected?.uuid ?? null}
             playingUuid={player.station?.uuid ?? null}
             favouriteUuids={favouriteUuids}
