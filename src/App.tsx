@@ -297,8 +297,13 @@ export default function App() {
   // Keyboard control, matching the desktop plugin's bindings.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Ctrl/Cmd/Alt combinations belong to the browser and the OS: Ctrl+F is
+      // find, not favourite, and Ctrl+minus is zoom, not volume.
+      if (event.ctrlKey || event.metaKey || event.altKey) return
       const target = event.target as HTMLElement | null
-      const typing = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
+      // A focused dropdown takes letters to jump between options.
+      const typing =
+        target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || !!target?.isContentEditable
       // Space and Enter belong to whatever control has focus; stealing them
       // would fire the button and the shortcut at once.
       const onControl = !!target?.closest('button, a, [role="button"]')
