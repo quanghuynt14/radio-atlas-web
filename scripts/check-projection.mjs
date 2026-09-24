@@ -8,23 +8,26 @@
  *
  * Run with: npm run check:projection
  */
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import * as esbuild from 'esbuild'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(mkdtempSync(join(tmpdir(), 'radio-atlas-')), 'projection.mjs')
 
-execFileSync(
-  join(root, 'node_modules', '.bin', 'esbuild'),
-  [join(root, 'src', 'lib', 'projection.ts'), '--format=esm', `--outfile=${out}`, '--log-level=error'],
-  { stdio: 'inherit' },
-)
+// esbuild's JS API rather than its CLI binary — no platform-specific shim path to resolve.
+await esbuild.build({
+  entryPoints: [join(root, 'src', 'lib', 'projection.ts')],
+  format: 'esm',
+  outfile: out,
+  logLevel: 'error',
+})
 
-const { project, invert, lookAt, centreOf, globeRadius, SPHERE_RADIUS } = await import(out)
+// Windows needs a file:// URL — a bare drive-letter path isn't a valid import specifier.
+const { project, invert, lookAt, centreOf, globeRadius, SPHERE_RADIUS } = await import(pathToFileURL(out).href)
 
 const failures = []
 const check = (label, ok, detail) => {
