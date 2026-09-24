@@ -59,8 +59,11 @@ export default function Player({ player, isFavourite, skipped, onToggleFavourite
             <span className="truncate">Pick a signal, or shuffle for a surprise.</span>
           )}
         </p>
-        {player.error ? <p className="player-error">{player.error}</p> : null}
-        {!player.error && skipped ? <p className="player-note">Skipped {skipped} — it was off air.</p> : null}
+        {/* Always present, so screen readers announce what appears in it. */}
+        <div aria-live="polite">
+          {player.error ? <p className="player-error">{player.error}</p> : null}
+          {!player.error && skipped ? <p className="player-note">Skipped {skipped} — it was off air.</p> : null}
+        </div>
       </div>
 
       <div className="player-actions">
