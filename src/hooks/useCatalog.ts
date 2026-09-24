@@ -100,25 +100,29 @@ export function useCatalog(): Catalog {
       const inflight = countryRequests.current.get(code)
       if (inflight) return inflight
 
+      // Only shares a request while it is in flight: every way out clears it,
+      // or a list served from the cache would be reused for the whole session.
       const request = (async () => {
-        const key = countryKey(code)
-        const cached = usable(await readFresh<Station[]>(key, COUNTRY_TTL))
-        if (cached.length) {
-          remember(cached)
-          return cached
-        }
-        const stale = usable(await readStale<Station[]>(key))
-        if (stale.length) remember(stale)
         try {
-          const fresh = await fetchByCountry(code)
-          if (fresh.length) {
-            remember(fresh)
-            void put(key, fresh)
-            return fresh
+          const key = countryKey(code)
+          const cached = usable(await readFresh<Station[]>(key, COUNTRY_TTL))
+          if (cached.length) {
+            remember(cached)
+            return cached
           }
-          return stale
-        } catch {
-          return stale
+          const stale = usable(await readStale<Station[]>(key))
+          if (stale.length) remember(stale)
+          try {
+            const fresh = await fetchByCountry(code)
+            if (fresh.length) {
+              remember(fresh)
+              void put(key, fresh)
+              return fresh
+            }
+            return stale
+          } catch {
+            return stale
+          }
         } finally {
           countryRequests.current.delete(code)
         }
