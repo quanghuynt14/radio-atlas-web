@@ -1,5 +1,6 @@
 import { reachable } from './availability'
 import type { Station } from './types'
+import { webUrl } from './url'
 
 /**
  * Radio Browser mirrors. `all.api` round-robins across the pool; the named
@@ -66,7 +67,7 @@ function normalise(raw: RawStation): Station | null {
     uuid,
     name: (raw.name || 'Unknown station').trim().slice(0, 120),
     url,
-    homepage: (raw.homepage || '').trim(),
+    homepage: webUrl(raw.homepage),
     favicon: (raw.favicon || '').trim(),
     country: (raw.country || '').trim(),
     countryCode: (raw.countrycode || '').trim().toUpperCase(),
