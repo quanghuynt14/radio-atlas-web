@@ -918,6 +918,12 @@ p {
     padding-top: 4px;
   }
 
+  /* iOS zooms the page into any field under 16px and never zooms back out,
+     which leaves the bottom bar off screen once the sheet closes. */
+  .search {
+    font-size: 16px;
+  }
+
   .tab {
     max-width: 40%;
     height: 34px;

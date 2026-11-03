@@ -74,6 +74,16 @@ export default function App() {
   const skips = useRef(0)
   const volumeRef = useRef({ volume: initial.volume, muted: initial.muted })
 
+  // Closing the sheet must also let go of the keyboard. Otherwise the search
+  // field keeps focus out of sight, and iOS leaves the page scrolled to where
+  // the keyboard pushed it, taking the bottom bar with it.
+  useEffect(() => {
+    if (sheet !== 'peek') return
+    const active = document.activeElement
+    if (active instanceof HTMLElement && panelRef.current?.contains(active)) active.blur()
+    window.scrollTo(0, 0)
+  }, [sheet])
+
   const favouriteUuids = useMemo(() => new Set(favourites.map((s) => s.uuid)), [favourites])
 
   useEffect(() => {
